@@ -263,6 +263,7 @@ impl ConfigStoreBuilder {
             env: oxlintrc.env,
             globals: oxlintrc.globals,
             path: Some(oxlintrc.path),
+            options: oxlintrc.options,
         };
 
         let mut builder = Self {
@@ -329,6 +330,11 @@ impl ConfigStoreBuilder {
     #[inline]
     pub fn plugins(&self) -> LintPlugins {
         self.config.plugins
+    }
+
+    #[inline]
+    pub fn type_aware(&self) -> Option<bool> {
+        self.config.options.type_aware
     }
 
     #[cfg(test)]
