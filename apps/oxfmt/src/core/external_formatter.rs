@@ -9,8 +9,8 @@ use serde_json::Value;
 use tracing::debug_span;
 
 use oxc_formatter::{
-    EmbeddedDocFormatterCallback, EmbeddedFormatterCallback, ExternalCallbacks,
-    FormatOptions, TailwindCallback,
+    EmbeddedDocFormatterCallback, EmbeddedFormatterCallback, ExternalCallbacks, FormatOptions,
+    TailwindCallback,
 };
 
 use crate::prettier_compat::from_prettier_doc;
@@ -46,16 +46,16 @@ pub type JsFormatEmbeddedCb = ThreadsafeFunction<
     false,
 >;
 
-/// Type alias for the Doc-path callback function signature.
-/// Takes (options, code) as arguments and returns Doc JSON string.
+/// Type alias for the Doc-path callback function signature (batch).
+/// Takes (options, texts[]) as arguments and returns Doc JSON string[] (one per text).
 /// The `options` object includes `parser` field set by Rust side.
 pub type JsFormatEmbeddedDocCb = ThreadsafeFunction<
     // Input arguments
-    FnArgs<(Value, String)>, // (options, code)
+    FnArgs<(Value, Vec<String>)>, // (options, texts)
     // Return type (what JS function returns)
-    Promise<String>,
+    Promise<Vec<String>>,
     // Arguments (repeated)
-    FnArgs<(Value, String)>,
+    FnArgs<(Value, Vec<String>)>,
     // Error status
     Status,
     // CalleeHandled
@@ -121,10 +121,10 @@ impl TsfnHandles {
 type FormatEmbeddedWithConfigCallback =
     Arc<dyn Fn(Value, &str) -> Result<String, String> + Send + Sync>;
 
-/// Callback function type for formatting embedded code via Doc IR path.
-/// Takes (options, code) and returns Doc JSON string or an error.
+/// Callback function type for formatting embedded code via Doc IR path (batch).
+/// Takes (options, texts) and returns Doc JSON strings (one per text) or an error.
 type FormatEmbeddedDocWithConfigCallback =
-    Arc<dyn Fn(Value, &str) -> Result<String, String> + Send + Sync>;
+    Arc<dyn Fn(Value, &[&str]) -> Result<Vec<String>, String> + Send + Sync>;
 
 /// Callback function type for formatting files with config.
 /// Takes (options, code) and returns formatted code or an error.
@@ -276,7 +276,7 @@ impl ExternalFormatter {
         let embedded_doc_callback: Option<EmbeddedDocFormatterCallback> = if needs_embedded {
             let format_embedded_doc = Arc::clone(&self.format_embedded_doc);
             let options_for_doc = options.clone();
-            Some(Arc::new(move |language: &str, code: &str| {
+            Some(Arc::new(move |language: &str, texts: &[&str]| {
                 let Some(parser_name) = language_to_prettier_parser(language) else {
                     return Err(format!("Unsupported language: {language}"));
                 };
@@ -289,16 +289,22 @@ impl ExternalFormatter {
                                 Value::String(parser_name.to_string()),
                             );
                         }
-                        let doc_json_str = (format_embedded_doc)(options, code).map_err(|err| {
-                            format!(
-                                "Failed to get Doc for embedded code (parser '{parser_name}'): {err}"
-                            )
-                        })?;
-                        let doc_json: serde_json::Value =
-                            serde_json::from_str(&doc_json_str).map_err(|err| {
-                                format!("Failed to parse Doc JSON: {err}")
+                        let doc_json_strs =
+                            (format_embedded_doc)(options, texts).map_err(|err| {
+                                format!(
+                                    "Failed to get Doc for embedded code (parser '{parser_name}'): {err}"
+                                )
                             })?;
-                        from_prettier_doc::doc_json_to_embedded_ir(&doc_json)
+                        doc_json_strs
+                            .into_iter()
+                            .map(|doc_json_str| {
+                                let doc_json: serde_json::Value =
+                                    serde_json::from_str(&doc_json_str).map_err(|err| {
+                                        format!("Failed to parse Doc JSON: {err}")
+                                    })?;
+                                from_prettier_doc::doc_json_to_embedded_ir(&doc_json)
+                            })
+                            .collect()
                     })
             }))
         } else {
@@ -342,7 +348,7 @@ impl ExternalFormatter {
             },
             init: Arc::new(|_| Err("Dummy init called".to_string())),
             format_embedded: Arc::new(|_, _| Err("Dummy format_embedded called".to_string())),
-            format_embedded_doc: Arc::new(|_, _| {
+            format_embedded_doc: Arc::new(|_, _: &[&str]| {
                 Err("Dummy format_embedded_doc called".to_string())
             }),
             format_file: Arc::new(|_, _| Err("Dummy format_file called".to_string())),
@@ -432,21 +438,22 @@ fn wrap_format_embedded(
     })
 }
 
-/// Wrap JS `formatEmbeddedDoc` callback as a normal Rust function.
+/// Wrap JS `formatEmbeddedDoc` callback as a normal Rust function (batch).
 /// The `options` Value is received with `parser` already set by the caller.
 fn wrap_format_embedded_doc(
     cb_handle: Arc<RwLock<Option<JsFormatEmbeddedDocCb>>>,
 ) -> FormatEmbeddedDocWithConfigCallback {
-    Arc::new(move |options: Value, code: &str| {
+    Arc::new(move |options: Value, texts: &[&str]| {
         let guard = cb_handle.read().unwrap();
         let Some(cb) = guard.as_ref() else {
             return Err("JS callback unavailable (environment shutting down)".to_string());
         };
+        let texts_owned: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();
         let result = block_on(async {
-            let status = cb.call_async(FnArgs::from((options, code.to_string()))).await;
+            let status = cb.call_async(FnArgs::from((options, texts_owned))).await;
             match status {
                 Ok(promise) => match promise.await {
-                    Ok(doc_json) => Ok(doc_json),
+                    Ok(doc_jsons) => Ok(doc_jsons),
                     Err(err) => Err(err.reason.clone()),
                 },
                 Err(err) => Err(err.reason.clone()),

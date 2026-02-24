@@ -10,10 +10,67 @@ const NEGATIVE_INFINITY_MARKER: &str = "__NEGATIVE_INFINITY__";
 ///
 /// This is the reverse of `to_prettier_doc.rs` which converts `FormatElement` → Prettier Doc JSON.
 /// The Doc JSON comes from Prettier's `__debug.printToDoc()` API.
+///
+/// Trailing hardline (`Line(Hard)` + `ExpandParent`) is stripped from the result.
+/// This matches Prettier's internal `textToDoc` behavior which calls `stripTrailingHardline`
+/// before returning. `__debug.printToDoc()` does not do this, so we handle it here.
 pub fn doc_json_to_embedded_ir(doc: &Value) -> Result<Vec<EmbeddedIR>, String> {
     let mut out = Vec::new();
     convert_doc(doc, &mut out)?;
+    strip_trailing_hardline(&mut out);
+    collapse_consecutive_hardlines(&mut out);
     Ok(out)
+}
+
+/// Strip trailing `hardline` pattern from the IR.
+///
+/// Prettier's `hardline` is `[line(hard), break-parent]`, which maps to
+/// `[Line(Hard), ExpandParent]` in EmbeddedIR.
+fn strip_trailing_hardline(ir: &mut Vec<EmbeddedIR>) {
+    if ir.len() >= 2
+        && matches!(ir[ir.len() - 1], EmbeddedIR::ExpandParent)
+        && matches!(ir[ir.len() - 2], EmbeddedIR::Line(LineMode::Hard))
+    {
+        ir.truncate(ir.len() - 2);
+    }
+}
+
+/// Collapse consecutive `[Line(Hard), ExpandParent, Line(Hard), ExpandParent]` into
+/// `[Line(Empty), ExpandParent]`.
+///
+/// In Prettier's Doc format, a blank line is represented as `hardline, hardline` which
+/// expands to `[Line(Hard), ExpandParent, Line(Hard), ExpandParent]`. However, oxc_formatter's
+/// printer needs `Line(Empty)` to produce a blank line (double newline).
+fn collapse_consecutive_hardlines(ir: &mut Vec<EmbeddedIR>) {
+    if ir.len() < 4 {
+        return;
+    }
+
+    let mut write = 0;
+    let mut read = 0;
+
+    while read < ir.len() {
+        // Check for the 4-element pattern: Line(Hard), ExpandParent, Line(Hard), ExpandParent
+        if read + 3 < ir.len()
+            && matches!(ir[read], EmbeddedIR::Line(LineMode::Hard))
+            && matches!(ir[read + 1], EmbeddedIR::ExpandParent)
+            && matches!(ir[read + 2], EmbeddedIR::Line(LineMode::Hard))
+            && matches!(ir[read + 3], EmbeddedIR::ExpandParent)
+        {
+            ir[write] = EmbeddedIR::Line(LineMode::Empty);
+            ir[write + 1] = EmbeddedIR::ExpandParent;
+            write += 2;
+            read += 4;
+        } else {
+            if write != read {
+                ir[write] = ir[read].clone();
+            }
+            write += 1;
+            read += 1;
+        }
+    }
+
+    ir.truncate(write);
 }
 
 fn convert_doc(doc: &Value, out: &mut Vec<EmbeddedIR>) -> Result<(), String> {
@@ -269,12 +326,11 @@ fn extract_group_id(
 ) -> Result<Option<u32>, String> {
     match obj.get(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => {
-            n.as_u64()
-                .and_then(|v| u32::try_from(v).ok())
-                .map(Some)
-                .ok_or_else(|| format!("Invalid group ID number: {n}"))
-        }
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .map(Some)
+            .ok_or_else(|| format!("Invalid group ID number: {n}")),
         Some(Value::String(s)) => {
             // Support "G<N>" format from to_prettier_doc.rs
             if let Some(num_str) = s.strip_prefix('G') {
@@ -410,6 +466,25 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_trailing_hardline() {
+        // hardline = [line(hard), break-parent]
+        let doc = json!(["hello", {"type": "line", "hard": true}, {"type": "break-parent"}]);
+        let ir = doc_json_to_embedded_ir(&doc).unwrap();
+        // Trailing hardline should be stripped
+        assert_eq!(ir.len(), 1);
+        assert!(matches!(&ir[0], EmbeddedIR::Text(s) if s == "hello"));
+    }
+
+    #[test]
+    fn test_no_strip_when_not_trailing_hardline() {
+        // Only Line(Hard) without ExpandParent — should not strip
+        let doc = json!(["hello", {"type": "line", "hard": true}]);
+        let ir = doc_json_to_embedded_ir(&doc).unwrap();
+        assert_eq!(ir.len(), 2);
+        assert!(matches!(ir[1], EmbeddedIR::Line(LineMode::Hard)));
+    }
+
+    #[test]
     fn test_fill() {
         let doc = json!({"type": "fill", "parts": ["a", {"type": "line"}, "b"]});
         let ir = doc_json_to_embedded_ir(&doc).unwrap();
@@ -426,5 +501,43 @@ mod tests {
         assert!(matches!(&ir[8], EmbeddedIR::Text(s) if s == "b"));
         assert!(matches!(ir[9], EmbeddedIR::EndEntry));
         assert!(matches!(ir[10], EmbeddedIR::EndFill));
+    }
+
+    #[test]
+    fn test_collapse_consecutive_hardlines_to_empty_line() {
+        // Two hardlines in sequence: [Line(Hard), ExpandParent, Line(Hard), ExpandParent]
+        // should collapse to [Line(Empty), ExpandParent]
+        let doc = json!([
+            "hello",
+            {"type": "line", "hard": true},
+            {"type": "break-parent"},
+            {"type": "line", "hard": true},
+            {"type": "break-parent"},
+            "world"
+        ]);
+        let ir = doc_json_to_embedded_ir(&doc).unwrap();
+        // "hello" + Line(Empty) + ExpandParent + "world"
+        assert_eq!(ir.len(), 4);
+        assert!(matches!(&ir[0], EmbeddedIR::Text(s) if s == "hello"));
+        assert!(matches!(ir[1], EmbeddedIR::Line(LineMode::Empty)));
+        assert!(matches!(ir[2], EmbeddedIR::ExpandParent));
+        assert!(matches!(&ir[3], EmbeddedIR::Text(s) if s == "world"));
+    }
+
+    #[test]
+    fn test_single_hardline_not_collapsed() {
+        // Single hardline should remain as-is
+        let doc = json!([
+            "hello",
+            {"type": "line", "hard": true},
+            {"type": "break-parent"},
+            "world"
+        ]);
+        let ir = doc_json_to_embedded_ir(&doc).unwrap();
+        assert_eq!(ir.len(), 4);
+        assert!(matches!(&ir[0], EmbeddedIR::Text(s) if s == "hello"));
+        assert!(matches!(ir[1], EmbeddedIR::Line(LineMode::Hard)));
+        assert!(matches!(ir[2], EmbeddedIR::ExpandParent));
+        assert!(matches!(&ir[3], EmbeddedIR::Text(s) if s == "world"));
     }
 }

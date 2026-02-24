@@ -15,8 +15,8 @@ use oxc_span::SourceType;
 use crate::{
     core::{
         ExternalFormatter, FormatFileStrategy, FormatResult, JsFormatEmbeddedCb,
-        JsFormatEmbeddedDocCb, JsFormatFileCb, JsInitExternalFormatterCb,
-        JsSortTailwindClassesCb, ResolvedOptions, SourceFormatter, resolve_options_from_value,
+        JsFormatEmbeddedDocCb, JsFormatFileCb, JsInitExternalFormatterCb, JsSortTailwindClassesCb,
+        ResolvedOptions, SourceFormatter, resolve_options_from_value,
     },
     prettier_compat::to_prettier_doc,
 };

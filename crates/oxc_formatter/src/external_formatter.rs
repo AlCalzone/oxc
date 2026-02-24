@@ -59,11 +59,15 @@ pub enum EmbeddedIR {
 pub type EmbeddedFormatterCallback =
     Arc<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>;
 
-/// Callback function type for formatting embedded code via Doc IR.
-/// Takes (tag_name, code) and returns embedded IR or an error.
+/// Callback function type for formatting embedded code via Doc IR (batch).
+///
+/// Takes (tag_name, texts) and returns one `Vec<EmbeddedIR>` per input text.
 /// Used for the Doc→IR path (e.g., `printToDoc` → Doc JSON → `EmbeddedIR`).
+///
+/// For GraphQL, each quasi is a separate text (`texts.len() == quasis.len()`).
+/// For CSS/HTML, quasis are joined with placeholders into a single text (`texts.len() == 1`).
 pub type EmbeddedDocFormatterCallback =
-    Arc<dyn Fn(&str, &str) -> Result<Vec<EmbeddedIR>, String> + Send + Sync>;
+    Arc<dyn Fn(&str, &[&str]) -> Result<Vec<Vec<EmbeddedIR>>, String> + Send + Sync>;
 
 /// Callback function type for sorting Tailwind CSS classes.
 /// Takes classes and returns the sorted versions.
@@ -125,16 +129,16 @@ impl ExternalCallbacks {
         self.embedded_formatter.as_ref().map(|cb| cb(tag_name, code))
     }
 
-    /// Format embedded code via Doc IR path.
+    /// Format embedded code via Doc IR path (batch).
     ///
-    /// Returns the formatted content as `Vec<EmbeddedIR>` which can be converted
-    /// to `FormatElement<'a>` by the caller.
+    /// Takes multiple texts and returns one `Vec<EmbeddedIR>` per input text.
+    /// The caller is responsible for interleaving the results with JS expressions.
     pub fn format_embedded_doc(
         &self,
         tag_name: &str,
-        code: &str,
-    ) -> Option<Result<Vec<EmbeddedIR>, String>> {
-        self.embedded_doc_formatter.as_ref().map(|cb| cb(tag_name, code))
+        texts: &[&str],
+    ) -> Option<Result<Vec<Vec<EmbeddedIR>>, String>> {
+        self.embedded_doc_formatter.as_ref().map(|cb| cb(tag_name, texts))
     }
 
     /// Sort Tailwind CSS classes.

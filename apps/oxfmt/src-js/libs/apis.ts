@@ -75,64 +75,48 @@ export async function formatEmbeddedCode({
 // ---
 
 export type FormatEmbeddedDocParam = {
-  code: string;
+  texts: string[];
   options: Options;
 };
 
 /**
- * Format xxx-in-js code snippets via Doc IR path.
+ * Format xxx-in-js code snippets via Doc IR path (batch).
  *
- * Uses `prettier.__debug.printToDoc()` to get the unresolved Doc,
- * then serializes it to JSON for the Rust side to parse.
+ * Uses `prettier.__debug.printToDoc()` to get the unresolved Doc for each text,
+ * then serializes each to JSON for the Rust side to parse.
  *
- * @returns Doc JSON string
+ * @returns Doc JSON strings (one per input text)
  */
 export async function formatEmbeddedDoc({
-  code,
+  texts,
   options,
-}: FormatEmbeddedDocParam): Promise<string> {
+}: FormatEmbeddedDocParam): Promise<string[]> {
   const prettier = await loadPrettier();
 
   // Enable Tailwind CSS plugin for embedded code if needed
   await setupTailwindPlugin(options);
 
-  // Get unresolved Doc from Prettier
-  const doc = await prettier.__debug.printToDoc(code, options);
+  return Promise.all(
+    texts.map(async (text) => {
+      // @ts-expect-error: Use internal API, but it's necessary and only way to get `Doc`
+      const doc = await prettier.__debug.printToDoc(text, options);
 
-  // Replace Symbol group IDs with numeric counters before JSON serialization
-  const symbolToNumber = new Map<symbol, number>();
-  let nextId = 1;
+      // Serialize Doc to JSON, handling special values in a single pass:
+      // - Symbol group IDs (used by group, if-break, indent-if-break) → numeric counters
+      // - -Infinity (used by dedentToRoot via align) → marker string
+      const symbolToNumber = new Map<symbol, number>();
+      let nextId = 1;
 
-  const { utils } = await import("prettier/doc");
-  utils.traverseDoc(doc, (docNode: any) => {
-    // Replace group id (Symbol → number)
-    if (docNode.type === "group" && typeof docNode.id === "symbol") {
-      if (!symbolToNumber.has(docNode.id)) {
-        symbolToNumber.set(docNode.id, nextId++);
-      }
-      docNode.id = symbolToNumber.get(docNode.id);
-    }
-    // Replace if-break groupId
-    if (docNode.type === "if-break" && typeof docNode.groupId === "symbol") {
-      if (!symbolToNumber.has(docNode.groupId)) {
-        symbolToNumber.set(docNode.groupId, nextId++);
-      }
-      docNode.groupId = symbolToNumber.get(docNode.groupId);
-    }
-    // Replace indent-if-break groupId
-    if (docNode.type === "indent-if-break" && typeof docNode.groupId === "symbol") {
-      if (!symbolToNumber.has(docNode.groupId)) {
-        symbolToNumber.set(docNode.groupId, nextId++);
-      }
-      docNode.groupId = symbolToNumber.get(docNode.groupId);
-    }
-  });
-
-  // Serialize with -Infinity replacer
-  return JSON.stringify(doc, (_key, value) => {
-    if (value === -Infinity) return "__NEGATIVE_INFINITY__";
-    return value;
-  });
+      return JSON.stringify(doc, (_key, value) => {
+        if (typeof value === "symbol") {
+          if (!symbolToNumber.has(value)) symbolToNumber.set(value, nextId++);
+          return symbolToNumber.get(value);
+        }
+        if (value === -Infinity) return "__NEGATIVE_INFINITY__";
+        return value;
+      });
+    }),
+  );
 }
 
 // ---
