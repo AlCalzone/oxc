@@ -1,5 +1,5 @@
 import { format as napiFormat, jsTextToDoc as napiJsTextToDoc } from "./bindings";
-import { resolvePlugins, formatEmbeddedCode, formatFile, sortTailwindClasses } from "./libs/apis";
+import { resolvePlugins, formatEmbeddedCode, formatEmbeddedDoc, formatFile, sortTailwindClasses } from "./libs/apis";
 import type { Options } from "prettier";
 
 // napi-JS `oxfmt` API entry point
@@ -18,6 +18,7 @@ export async function format(fileName: string, sourceText: string, options?: For
     options ?? {},
     resolvePlugins,
     (options, code) => formatEmbeddedCode({ options, code }),
+    (options, code) => formatEmbeddedDoc({ options, code }),
     (options, code) => formatFile({ options, code }),
     (options, classes) => sortTailwindClasses({ options, classes }),
   );
@@ -39,6 +40,7 @@ export async function jsTextToDoc(
     parentContext,
     resolvePlugins,
     (options, code) => formatEmbeddedCode({ options, code }),
+    (options, code) => formatEmbeddedDoc({ options, code }),
     (_options, _code) => Promise.reject(/* Unreachable */),
     (options, classes) => sortTailwindClasses({ options, classes }),
   );
