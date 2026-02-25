@@ -47,8 +47,10 @@ pub use ast_types_bitset::AstTypesBitset;
 pub use builder::{SemanticBuilder, SemanticBuilderReturn};
 pub use is_global_reference::IsGlobalReference;
 #[cfg(feature = "linter")]
-pub use jsdoc::{JSDoc, JSDocFinder, JSDocTag};
+pub use jsdoc::JSDocFinder;
 pub use node::{AstNode, AstNodes};
+#[cfg(feature = "linter")]
+pub use oxc_jsdoc::{JSDoc, JSDocTag};
 pub use scoping::Scoping;
 pub use stats::Stats;
 

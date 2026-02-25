@@ -24,8 +24,6 @@ use oxc_syntax::{
     symbol::{SymbolFlags, SymbolId},
 };
 
-#[cfg(feature = "linter")]
-use crate::jsdoc::JSDocBuilder;
 use crate::{
     Semantic,
     binder::{Binder, ModuleInstanceState},
@@ -38,6 +36,8 @@ use crate::{
     stats::Stats,
     unresolved_stack::UnresolvedReferencesStack,
 };
+#[cfg(feature = "linter")]
+use oxc_jsdoc::JSDocBuilder;
 
 #[cfg(feature = "cfg")]
 macro_rules! control_flow {
@@ -284,7 +284,10 @@ impl<'a> SemanticBuilder<'a> {
             .set_root_unresolved_references(self.unresolved_references.into_root().into_iter());
 
         #[cfg(feature = "linter")]
-        let jsdoc = self.jsdoc.build();
+        let jsdoc = {
+            let result = self.jsdoc.build();
+            crate::jsdoc::JSDocFinder::new(result.attached, result.not_attached)
+        };
 
         #[cfg(debug_assertions)]
         self.unused_labels.assert_empty();
