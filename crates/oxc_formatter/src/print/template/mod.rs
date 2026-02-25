@@ -767,4 +767,3 @@ impl<'a> Format<'a> for EachTemplateTable<'a> {
         write!(f, ["`", indent(&format_args!(table_content)), hard_line_break(), "`"]);
     }
 }
-

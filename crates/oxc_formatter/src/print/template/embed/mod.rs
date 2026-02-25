@@ -4,10 +4,7 @@ use oxc_syntax::line_terminator::LineTerminatorSplitter;
 
 use crate::{
     ast_nodes::{AstNode, AstNodes},
-    formatter::{
-        Formatter,
-        prelude::*,
-    },
+    formatter::{Formatter, prelude::*},
     write,
 };
 
